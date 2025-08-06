@@ -1,45 +1,74 @@
-from oandapyV20 import API
-import oandapyV20.endpoints.accounts as accounts
-import oandapyV20.endpoints.orders as orders
-import oandapyV20.endpoints.pricing as pricing
+import os
+import time
+import requests
+from broker import oanda
+from strategies import EMA_CROSS_9_25_bot 
 
-# Replace these with your actual credentials
-API_KEY = "463540f20dc813f79b82efa519f4b8a2-3f2f9497f043b6e7b20417495be1b7ca"
-ACCOUNT_ID = "101-004-35977326-001"
+# get signal
+# signal = {
+#   "instrument": "GBP_USD",
+#   "action": "buy",
+#   "risk_gbp": 300
+# }
+# 
+risk_percent = 1
+API_KEY = os.getenv("OANDA_API_KEY")
+ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
 
-client = API(access_token=API_KEY)
+# result = oanda.execute_trade(signal)
+#if result:
+#    print(f"Trade executed on {result['instrument']} at {result['price']} with P/L: {result['pl']}")
 
-# Check account balance
-def get_balance():
-    r = accounts.AccountSummary(accountID=ACCOUNT_ID)
-    client.request(r)
-    print("Balance:", r.response['account']['balance'])
+client = oanda.OandaClient(API_KEY, ACCOUNT_ID)
 
-def place_trade(units=100, instrument="EUR_USD"):
-    order_data = {
-        "order": {
-            "instrument": instrument,
-            "units": str(units),  # positive = buy, negative = sell
-            "type": "MARKET",
-            "positionFill": "DEFAULT"
-        }
-    }
-    r = orders.OrderCreate(accountID=ACCOUNT_ID, data=order_data)
-    client.request(r)
-    print("Order placed:", r.response)
+def trading_bot(instruments, strategies, risk_percent):
+    print('Running bot...')
 
-def get_price(instrument="EUR_USD"):
-    params = {"instruments": instrument}
-    r = pricing.PricingInfo(accountID=ACCOUNT_ID, params=params)
-    client.request(r)
-    for price in r.response['prices']:
-        print(f"{instrument} Bid: {price['bids'][0]['price']}, Ask: {price['asks'][0]['price']}")
-
-def trading_bot():
     while True:
-        # Example logic: place a trade if price < X
-        get_price()
-        # add your strategy here...
-        # place_trade() if condition met
+        for instrument in instruments:
+            print(f'Current instrument: {instrument}')
+            for attempt in range(3):
+                print('Attempting to collect candles...')
+                try:
+                    candle_data = client.get_candles(instrument)
+                    break
+                except requests.exceptions.RequestException as e:
+                    print(f"Attempt {attempt+1} failed while fetching candles for {instrument}: {e}")
+                    time.sleep(5)
+            else:
+                print(f"Skipping {instrument} after 3 failed attempts to fetch candles.")
+                continue
 
-get_balance()
+            
+            for strategy in strategies:
+                if strategy == 'EMA_CROSS_9_25':
+                    signal = EMA_CROSS_9_25_bot.run(candle_data, instrument)
+                    print(signal)
+                    if signal['action'] != 'hold':
+                        current_price = client.get_price(instrument)
+                        if signal['action'] == 'buy':
+                            current_price_actual = signal['ask']
+                        else:
+                            current_price_actual = signal['big']
+                        sl_distance = abs(signal['stop_loss'] - current_price_actual)
+                        sl_pips = sl_distance / 0.0001
+                        units = int(signal['risk'] / (sl_pips * 0.0001))
+                        balance = client.get_balance()
+                        if (balance - 300 >= 0):
+                            risk_gbp = balance * (risk_percent / 100)
+                            signal['risk'] = risk_gbp
+                            signal['units'] = units
+                            trade = client.execute_trade(signal)
+                        print(trade)
+                    else:
+                        print('Hold')
+
+        for i in range(60):
+            if i % 10 == 0:
+                print(f'Waiting for new candles\nTime passed: {i} Seconds')
+            time.sleep(1)
+
+instruments = ['EUR_USD', 'GBP_USD', 'USD_JPY']
+strategies = ['EMA_CROSS_9_25']
+
+trading_bot(instruments, strategies, risk_percent)
