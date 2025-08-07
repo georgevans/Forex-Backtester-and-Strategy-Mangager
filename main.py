@@ -4,20 +4,9 @@ import requests
 from broker import oanda
 from strategies import EMA_CROSS_9_25_bot 
 
-# get signal
-# signal = {
-#   "instrument": "GBP_USD",
-#   "action": "buy",
-#   "risk_gbp": 300
-# }
-# 
 risk_percent = 1
 API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
-
-# result = oanda.execute_trade(signal)
-#if result:
-#    print(f"Trade executed on {result['instrument']} at {result['price']} with P/L: {result['pl']}")
 
 client = oanda.OandaClient(API_KEY, ACCOUNT_ID)
 
@@ -49,7 +38,7 @@ def trading_bot(instruments, strategies, risk_percent):
                         if signal['action'] == 'buy':
                             current_price_actual = signal['ask']
                         else:
-                            current_price_actual = signal['big']
+                            current_price_actual = signal['bid']
                         sl_distance = abs(signal['stop_loss'] - current_price_actual)
                         sl_pips = sl_distance / 0.0001
                         units = int(signal['risk'] / (sl_pips * 0.0001))
