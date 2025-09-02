@@ -1,10 +1,13 @@
 import os
+from dotenv import load_dotenv
 import time
 import requests
 from broker import oanda
 from strategies import EMA_CROSS_9_25_bot 
 
 risk_percent = 1
+
+load_dotenv()
 API_KEY = os.getenv("OANDA_API_KEY")
 ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
 
@@ -36,9 +39,9 @@ def trading_bot(instruments, strategies, risk_percent):
                     if signal['action'] != 'hold':
                         current_price = client.get_price(instrument)
                         if signal['action'] == 'buy':
-                            current_price_actual = signal['ask']
+                            current_price_actual = current_price['ask']
                         else:
-                            current_price_actual = signal['bid']
+                            current_price_actual = current_price['bid']
                         sl_distance = abs(signal['stop_loss'] - current_price_actual)
                         sl_pips = sl_distance / 0.0001
                         units = int(signal['risk'] / (sl_pips * 0.0001))

@@ -32,7 +32,8 @@ def run(candles, instrument="EUR_USD"):
             "instrument": instrument,
             "action": "buy",
             "stop_loss": float(sl),
-            "take_profit": float(tp)
+            "take_profit": float(tp),
+            'risk': 300
         }
 
     elif prev["ema_9"] > prev["ema_25"] and last["ema_9"] < last["ema_25"]:
@@ -43,7 +44,8 @@ def run(candles, instrument="EUR_USD"):
             "instrument": instrument,
             "action": "sell",
             "stop_loss": float(sl),
-            "take_profit": float(tp)
+            "take_profit": float(tp),
+            'risk': 300
         }
 
     else:

@@ -63,18 +63,19 @@ class OandaClient:
         return instrument in open_positions and open_positions[instrument] != 0
 
     def execute_trade(self, signal, prevent_duplicates=True):
-        side = signal["action"]  # 'buy' or 'sell'
+        side = signal["action"]
         instrument = signal["instrument"]
         risk_gbp = signal.get("risk_gbp", 300)
 
-        # Avoid duplicate entries unless hedging is enabled
+        units = signal.get("units")
+        if units is None:
+            units = self.calculate_units(risk_gbp, instrument)
+        if side == "sell":
+            units = -abs(units)
+
         if prevent_duplicates and self.has_open_position(instrument):
             print(f"[SKIP] Position already open on {instrument}")
             return None
-
-        units = self.calculate_units(risk_gbp, instrument)
-        if side == "sell":
-            units = -units
 
         order_data = {
             "order": {
@@ -84,6 +85,15 @@ class OandaClient:
                 "positionFill": "DEFAULT"
             }
         }
+
+        if "stop_loss" in signal:
+            order_data["order"]["stopLossOnFill"] = {
+                "price": str(round(signal["stop_loss"], 5))
+            }
+        if "take_profit" in signal:
+            order_data["order"]["takeProfitOnFill"] = {
+                "price": str(round(signal["take_profit"], 5))
+            }
 
         r = orders.OrderCreate(accountID=self.account_id, data=order_data)
         self.client.request(r)
@@ -100,7 +110,8 @@ class OandaClient:
             "pl": float(fill.get("pl", 0)),
             "timestamp": fill.get("time")
         }
-    
+
+        
 
 
 # Features:
