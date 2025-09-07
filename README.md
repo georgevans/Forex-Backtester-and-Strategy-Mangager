@@ -1,6 +1,9 @@
 # Forex Strategy Backtester & Live Trader
 
-A Python-based Forex trading framework for backtesting and live trading major currency pairs. This project implements an EMA crossover strategy with ATR-based risk management and RSI confirmation. It supports both historical backtesting and live trading via the OANDA API.
+A Python-based Forex trading framework for backtesting and live trading major currency pairs. 
+
+This project features one strategy that implements an EMA crossover strategy with ATR-based risk management and RSI confirmation. This strategy is carried out by a live trading bot using the OANDA broker API.
+The main purpose of the project however is to create a backtester that can be used with any strategy that returns investment signals based on candle data. The end goal is to create a bank of strategies and use machine learnign to optimize each strategies parameters to improve returns and reduce drawdowns.
 
 ## Features
 
