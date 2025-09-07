@@ -1,347 +1,381 @@
 import pandas as pd
-import sys
+import time
+import os
 import csv
 import strategies.EMA_CROSS_9_25_bot as strat
 import matplotlib.pyplot as plt
 
+def run_backtest(
+    instrument="EUR_USD",
+    risk_percent=0.01,
+    starting_balance=850,
+    candle_counter=2016,
+    trail_on=False,
+    trail_start=0.7,
+    trail_distance=0.25,
+    debug=False,
+    csv_filename="trades_made_1",
+    folder_name="results_set_1",
+    metric_filename="metric_set_1"
+):
+    # --- Globals / State ---
+    trades = []
+    completed_trades = []
+    account_balance = starting_balance
+    trades_made = 0
+    trades_closed = 0
+    trades_unfinished = 0
+    stategy_assesment_metrics = []
 
-# --- Configuration ---
-starting_balance = 850
-risk_percent = 0.01       # 1% risk per trade
-candle_counter = 2016     # Number of candles to backtest
-debug = False
+    # --- Helper functions ---
+    def calculate_units(account_balance, risk_percent, entry_price, stop_loss, instrument):
+        risk_usd = account_balance * risk_percent
+        if instrument[-3:] == "JPY":
+            pip_size = 0.01
+            pip_multiplier = 100
+        else:
+            pip_size = 0.0001
+            pip_multiplier = 10000
+        sl_distance = abs(entry_price - stop_loss) * pip_multiplier
+        if sl_distance == 0:
+            return 0
+        return risk_usd / (sl_distance * pip_size)
 
-if len(sys.argv) == 2:
-    candle_counter = int(sys.argv[1])
+    def check_instrument_availability():
+        return not any(tr['instrument'] == instrument and tr['close_price'] is None for tr in trades)
 
-# --- Globals ---
-trades = []
-completed_trades = []
-account_balance = starting_balance
-trades_made = 0
-trades_closed = 0
-trades_unfinished = 0
+    def execute_trade(signal, entry_price, date=None, time=None):
+        nonlocal trades_made, account_balance
+        units = calculate_units(account_balance, risk_percent, entry_price, signal['stop_loss'], signal['instrument'])
+        trade = {
+            "trade_id": trades_made,
+            "instrument": signal['instrument'],
+            "action": signal['action'],
+            "entry_price": entry_price,
+            "stop_loss": signal['stop_loss'],
+            "original_stop_loss": signal['stop_loss'],
+            "take_profit": signal['take_profit'],
+            "original_take_profit": signal['take_profit'],
+            "units": units,
+            "open_price": entry_price,
+            "highest_price": entry_price,
+            "lowest_price": entry_price,
+            "close_price": None,
+            "be_reached": False,
+            "win": None,
+            "profit": None,
+            "profit_pips": None,
+            "profit_usd": None,
+            "%_TP_reached": False,
+        }
+        trades.append(trade)
+        trades_made += 1
+        stategy_assesment_metrics.append({
+            "entry_price": entry_price,
+            "stop_loss": signal['stop_loss'],
+            "take_profit": signal['take_profit'],
+            "units": units,
+        })
+        if debug:
+            print(f"Opened trade: {trade['action']} at {entry_price}, Units: {units}")
+        return trade
 
-stategy_assesment_metrics = [] # {(open price, close price, highest price, lowest price, if BE reached)}
+    def update_positions(candle):
+        nonlocal trades_closed, account_balance
+        for tr in trades:
+            if tr['close_price'] is not None:
+                continue
 
-# --- Functions ---
-def calculate_units(account_balance, risk_percent, entry_price, stop_loss, instrument):
-    """Calculate position size based on risk percent and SL distance."""
-    risk_usd = account_balance * risk_percent
-    if instrument[-3:] == "JPY":
-        pip_size = 0.01
-        pip_multiplier = 100
-    else:
-        pip_size = 0.0001
-        pip_multiplier = 10000
+            action = tr['action']
+            entry_price = tr['entry_price']
 
-    sl_distance = abs(entry_price - stop_loss) * pip_multiplier
-    if sl_distance == 0:
-        return 0
+            tr['highest_price'] = max(tr['highest_price'], candle['high'])
+            tr['lowest_price'] = min(tr['lowest_price'], candle['low'])
 
-    units = risk_usd / (sl_distance * pip_size)
-    return units
+            # Trailing stop logic if enabled
+            if trail_on:
+                if not tr['%_TP_reached']:
+                    tp_distance = abs(tr["take_profit"] - entry_price)
+                    trigger_price = entry_price + trail_start * tp_distance if action == 'buy' else entry_price - trail_start * tp_distance
+                    if (action == 'buy' and candle['high'] >= trigger_price) or (action == 'sell' and candle['low'] <= trigger_price):
+                        tr['%_TP_reached'] = True
 
-# --- Check instrument availability ---
-def check_instrument_availability(instrument='EUR_USD'):
-    """Return True if no open position exists on this instrument."""
-    return not any(tr['instrument'] == instrument and tr['close_price'] is None for tr in trades)
+                if not tr['be_reached']:
+                    risk_distance = abs(entry_price - tr['stop_loss'])
+                    if (action == 'buy' and candle['high'] - entry_price >= risk_distance) or \
+                       (action == 'sell' and entry_price - candle['low'] >= risk_distance):
+                        tr['be_reached'] = True
 
+                if tr['be_reached']:
+                    trail_dist = strat.get_trailing_stop_distance_if_triggered(candle, tr, trail_start, trail_distance)
+                    if trail_dist is not None:
+                        tr["take_profit"] = None
+                        if action == 'buy':
+                            new_stop = tr['highest_price'] - trail_dist
+                            if new_stop > tr['stop_loss']:
+                                tr['stop_loss'] = round(new_stop, 6)
+                        elif action == 'sell':
+                            new_stop = tr['lowest_price'] + trail_dist
+                            if new_stop < tr['stop_loss']:
+                                tr['stop_loss'] = round(new_stop, 6)
 
-# --- Execute trade ---
-def execute_trade(signal, entry_price, date, time):
-    """Open a new trade using strategy signal and risk-based units."""
-    global trades, trades_made
-    units = calculate_units(account_balance, risk_percent, entry_price, signal['stop_loss'], signal['instrument'])
-    trade = {
-        "instrument": signal['instrument'],
-        "action": signal['action'],
-        "entry_price": entry_price,
-        "stop_loss": signal['stop_loss'],
-        "take_profit": signal['take_profit'],
-        "units": units,
-        "open_price": entry_price,
-        "highest_price": entry_price,
-        "lowest_price": entry_price,
-        "close_price": None,
-        "be_reached": False,
-        "win": None,
-        "profit": None,
-        "profit_pips": None,
-        "profit_usd": None
-    }
-    trades.append(trade)
-    trades_made += 1
-    if debug:
-        print(f"Opened trade: {trade['action']} at {entry_price}, Units: {units}")
-    stategy_assesment_metrics.append({
-        "entry_price": entry_price,
-        "stop_loss": signal['stop_loss'],
-        "take_profit": signal['take_profit'],
-        "units": units,
-    })
-    return trade
+            # Check exit conditions
+            hit_tp = hit_sl = False
+            if action == 'buy':
+                if tr["take_profit"]:
+                    hit_tp = candle['high'] >= tr['take_profit']
+                hit_sl = candle['low'] <= tr['stop_loss']
+            else:
+                if tr["take_profit"]:
+                    hit_tp = candle['low'] <= tr['take_profit']
+                hit_sl = candle['high'] >= tr['stop_loss']
 
+            if not hit_tp and not hit_sl:
+                continue
 
-# --- Update positions --- when new canadle arrives
-def update_positions(candle):
-    """Update all open positions based on current candle high/low."""
-    global trades_closed, account_balance
+            # Resolve exit
+            if hit_tp and hit_sl:
+                price, win = tr['stop_loss'], False
+            elif hit_tp:
+                price, win = tr['take_profit'], True
+            elif hit_sl:
+                price, win = tr['stop_loss'], False
 
+            tr['close_price'] = price
+            tr['win'] = win
+            tr['profit'] = round(price - entry_price, 6) if action == 'buy' else round(entry_price - price, 6)
+            tr['profit_pips'] = round(tr['profit'] * 10000, 1)
+            tr['profit_usd'] = round(tr['profit'] * tr['units'], 2)
+            account_balance += tr['profit_usd']
+            completed_trades.append(tr)
+            trades_closed += 1
+
+    # --- Load historical data ---
+    historical_candles = pd.read_csv('EURUSD5.csv')
+    historical_candles = historical_candles.tail(candle_counter).reset_index(drop=True)
+
+    # --- Backtest loop ---
+    start_time = time.perf_counter()  # start timer once before the loop
+
+    for idx, row in historical_candles.iterrows():
+        if idx % 200 == 0 and idx != 0:  # skip 0
+            end_time = time.perf_counter()
+            print(f'Candle count: {idx}, {candle_counter-idx} left')
+            print(f'Time elapsed for last 200 candles: {end_time - start_time:.4f} seconds')
+            start_time = time.perf_counter()  # reset timer for next batch
+        candle = {
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close'])
+        }
+        update_positions(candle)
+
+        if idx < 200:
+            continue
+
+        signal = strat.run(historical_candles.iloc[:idx+1].to_dict('records'), instrument=instrument)
+        if signal['action'] != 'hold' and check_instrument_availability():
+            entry_price = float(historical_candles.iloc[idx + 1]['open']) if idx + 1 < len(historical_candles) else candle['close']
+            execute_trade(signal, entry_price, row.get('date'), row.get('time'))
+
+    # Force close any remaining trades
     for tr in trades:
-        if tr['close_price'] is not None:
-            continue  # already closed
+        if tr['close_price'] is None:
+            tr['close_price'] = historical_candles.iloc[-1]['close']
+            tr['profit'] = tr['close_price'] - tr['entry_price'] if tr['action'] == 'buy' else tr['entry_price'] - tr['close_price']
+            tr['profit_pips'] = round(tr['profit'] * 10000, 1)
+            tr['profit_usd'] = round(tr['profit'] * tr['units'], 2)
+            tr['win'] = tr['profit'] > 0
+            account_balance += tr['profit_usd']
+            completed_trades.append(tr)
 
-        action = tr['action']
+    trades.clear()
 
-        # Update excursions
-        tr['highest_price'] = max(tr.get('highest_price', tr['entry_price']), candle['high'])
-        tr['lowest_price'] = min(tr.get('lowest_price', tr['entry_price']), candle['low'])
+    # --- Metrics Calculation ---
+    def calculate_metrics(trade_list):
+        if not trade_list:
+            return {}
+        total = len(trade_list)
+        wins = [t for t in trade_list if t['profit_usd'] > 0]
+        losses = [t for t in trade_list if t['profit_usd'] < 0]
+        breakeven = [t for t in trade_list if round(t['profit_usd'], 2) == 0]
 
-        # Check if break-even was reached (1R move in favor)
-        if not tr.get('be_reached', False):
-            risk_distance = abs(tr['entry_price'] - tr['stop_loss'])
-            if action == 'buy' and (candle['high'] - tr['entry_price'] >= risk_distance):
-                tr['be_reached'] = True
-            elif action == 'sell' and (tr['entry_price'] - candle['low'] >= risk_distance):
-                tr['be_reached'] = True
+        rr_list = []
+        for t in trade_list:
+            if t['close_price'] is not None and t.get('original_stop_loss') is not None:
+                risk = abs(t['entry_price'] - t['original_stop_loss'])
+                reward = abs(t['close_price'] - t['entry_price'])
+                if risk > 0:
+                    rr_list.append(reward / risk)
+        avg_rrr = round(sum(rr_list) / len(rr_list), 2) if rr_list else 0.0
 
-        # --- NEW: Check if trade needs modification (trailing stop, etc.) ---
-        new_stop = strat.check_modify(
-            price=candle['close'],                  # current price to evaluate trailing
-            entry_price=tr['entry_price'],          # break-even / entry level
-            take_profit=tr['take_profit'],          # original TP
-            breakeven_reached=tr.get('be_reached', False),  # whether BE has been reached
-            trail_start=0.7,                        # optional, default threshold
-            trail_distance=0.25                      # optional, default trail distance
-        )
+        total_usd = sum(t['profit_usd'] for t in trade_list)
+        win_rate = len(wins) / total * 100 if total else 0
+        avg_win = sum(t['profit_usd'] for t in wins) / len(wins) if wins else 0
+        avg_loss = sum(t['profit_usd'] for t in losses) / len(losses) if losses else 0
+        profit_factor = (sum(t['profit_usd'] for t in wins) / abs(sum(t['profit_usd'] for t in losses))) if losses else float('inf')
 
-        if new_stop:
-            print(new_stop)
+        be_reached = [t for t in trade_list if t.get('be_reached')]
+        trail_start_reached = [t for t in trade_list if t.get('%_TP_reached')]
+        trail_failures = [t for t in trail_start_reached if t['profit_usd'] <= 0]
+        trail_successes = [t for t in trail_start_reached if t['profit_usd'] > 0]
 
-        # Trade exit logic
-        hit_tp = hit_sl = False
-        if action == 'buy':
-            hit_tp = candle['high'] >= tr['take_profit']
-            hit_sl = candle['low'] <= tr['stop_loss']
-        else:  # sell
-            hit_tp = candle['low'] <= tr['take_profit']
-            hit_sl = candle['high'] >= tr['stop_loss']
+        pct_tp_captured = []
+        for t in trail_start_reached:
+            tp_distance = abs(t['original_take_profit'] - t['entry_price'])
+            if tp_distance > 0:
+                profit_distance = abs(t['close_price'] - t['entry_price'])
+                pct_tp_captured.append((profit_distance / tp_distance) * 100)
+        avg_pct_tp_captured = sum(pct_tp_captured) / len(pct_tp_captured) if pct_tp_captured else 0
 
-        # Both hit: conservative (assume worst case)
-        if hit_tp and hit_sl:
-            price = tr['stop_loss']
-            win = False
-        elif hit_tp:
-            price = tr['take_profit']
-            win = True
-        elif hit_sl:
-            price = tr['stop_loss']
-            win = False
-        else:
-            continue  # neither hit this candle
+        trades_hit_tp = [t for t in trade_list if t['win']]
+        win_rate_tp = round(len(trades_hit_tp) / total * 100, 2) if total else 0
 
-        # Close trade
-        tr['close_price'] = price
-        tr['win'] = win
+        return {
+            'total_trades': total,
+            'wins': len(wins),
+            'losses': len(losses),
+            'breakeven': len(breakeven),
+            'win_rate': round(win_rate, 2),
+            'avg_win': round(avg_win, 2),
+            'avg_loss': round(avg_loss, 2),
+            'profit_factor': round(profit_factor, 2),
+            'be_reached_count': len(be_reached),
+            'be_reached_pct': round(len(be_reached) / total * 100, 2) if total else 0,
+            'trail_start_reached_count': len(trail_start_reached),
+            'trail_start_reached_pct': round(len(trail_start_reached) / total * 100, 2) if total else 0,
+            'trail_failures': len(trail_failures),
+            'trail_successes': len(trail_successes),
+            'avg_pct_tp_captured': round(avg_pct_tp_captured, 2),
+            'avg_rrr': avg_rrr,
+            'win_rate_tp': win_rate_tp
+        }
 
-        # Profit calculations
-        if action == 'buy':
-            tr['profit'] = round(price - tr['entry_price'], 6)
-        else:
-            tr['profit'] = round(tr['entry_price'] - price, 6)
+    metrics = calculate_metrics(completed_trades)
 
-        tr['profit_pips'] = round(tr['profit'] * 10000, 1)
-        tr['profit_usd'] = round(tr['profit'] * tr['units'], 2)
-        account_balance += tr['profit_usd']
+    # --- Save trades ---
+    if completed_trades:
+        os.makedirs(folder_name, exist_ok=True)  # ensure folder exists
+        trades_csv_path = os.path.join(folder_name, csv_filename)
 
-        completed_trades.append(tr)
-        trades_closed += 1
+        with open(trades_csv_path, "w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=completed_trades[0].keys())
+            writer.writeheader()
+            for tr in completed_trades:
+                writer.writerow(tr)
 
-
-
-def remove_unfinished(trades):
-    """Return list of trades that were closed."""
-    global trades_unfinished
-    cleaned = []
-    for tr in trades:
-        if tr['close_price'] == 0:
-            trades_unfinished += 1
-        else:
-            cleaned.append(tr)
-    return cleaned
-
-def calc_total_profit(trade_list):
-    total_usd = sum(t['profit_usd'] for t in trade_list)
-    total_pips = sum(t['profit_pips'] for t in trade_list)
-    return round(total_usd, 2), round(total_pips, 2)
-
-def calculate_metrics(trade_list):
-    """Calculate standard trade metrics."""
-    if not trade_list:
-        return {}
-    wins = [t for t in trade_list if t['win']]
-    losses = [t for t in trade_list if not t['win']]
-    win_rate = len(wins) / len(trade_list) * 100
-    avg_win = sum(t['profit_usd'] for t in wins) / len(wins) if wins else 0
-    avg_loss = sum(t['profit_usd'] for t in losses) / len(losses) if losses else 0
-    profit_factor = (sum(t['profit_usd'] for t in wins) / abs(sum(t['profit_usd'] for t in losses))
-                     if losses and sum(t['profit_usd'] for t in losses) != 0 else float('inf'))
-    return {
-        'total_trades': len(trade_list),
-        'wins': len(wins),
-        'losses': len(losses),
-        'win_rate': round(win_rate, 2),
-        'avg_win': round(avg_win, 2),
-        'avg_loss': round(avg_loss, 2),
-        'profit_factor': round(profit_factor, 2)
-    }
-
-def export_trades_to_csv(filename="trades_output.csv", include_open=False):
-    """Export all trades to a CSV file for analysis."""
-    fieldnames = [
-        "instrument", "action", "open_price", "entry_price",
-        "stop_loss", "take_profit", "highest_price", "lowest_price",
-        "be_reached", "close_price", "profit", "profit_pips",
-        "profit_usd", "win", "units"
-    ]
-
-    with open(filename, mode="w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
-
-        # Completed trades first
-        for tr in completed_trades:
-            writer.writerow(tr)
-
-        # Optionally include open trades still running
-        if include_open:
-            for tr in trades:
-                if tr['close_price'] is None:
-                    writer.writerow(tr)
-
-    print(f"Trades exported to {filename}")
-
-# --- Load data ---
-historical_candles = pd.read_csv('EURUSD5.csv')
-historical_candles = historical_candles.tail(candle_counter).reset_index(drop=True)
-print(f"Loaded {len(historical_candles)} most recent candles for backtest.")
-
-# --- Backtest loop ---
-for idx, row in historical_candles.iterrows():
-    candle = {
-        "open": float(row['open']),
-        "high": float(row['high']),
-        "low": float(row['low']),
-        "close": float(row['close'])
-    }
-
-    # Update open positions first
-    update_positions(candle)
-
-    # Need enough candles for strategy
-    if idx < 200:
-        continue
-
-    # Strategy signal
-    signal = strat.run(historical_candles.iloc[:idx+1].to_dict('records'), instrument="EUR_USD")
-
-    # Execute trade if allowed
-    if signal['action'] != 'hold' and check_instrument_availability():
-        if idx + 1 < len(historical_candles):
-            entry_price = float(historical_candles.iloc[idx + 1]['open'])
-        else:
-            entry_price = candle['close']
-        execute_trade(signal, entry_price, row['date'], row['time'])
-
-# Force close remaining trades at last candle close
-for tr in trades:
-    if tr['close_price'] == 0:
-        tr['close_price'] = historical_candles.iloc[-1]['close']
-        if tr['action'] == 'buy':
-            tr['profit'] = tr['close_price'] - tr['entry_price']
-        else:
-            tr['profit'] = tr['entry_price'] - tr['close_price']
-        tr['profit_pips'] = round(tr['profit'] * 10000, 1)
-        tr['profit_usd'] = round(tr['profit'] * tr['units'], 2)
-        tr['win'] = tr['profit'] > 0
-        account_balance += tr['profit_usd']
-        completed_trades.append(tr)
-
-trades.clear()
-
-# --- Results ---
-clean_trades = remove_unfinished(completed_trades)
-total_usd, total_pips = calc_total_profit(clean_trades)
-metrics = calculate_metrics(clean_trades)
-percentage_PL = (total_usd / starting_balance) * 100
+        if metrics:
+            metrics_csv_path = os.path.join(folder_name, metric_filename)
+        with open(metrics_csv_path, "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Metric", "Value"])
+            for k, v in metrics.items():
+                writer.writerow([k, v])
 
 
-print("\n" + "="*40)
-print("BACKTEST RESULTS")
-print("="*40)
-print(f"Initial balance: ${starting_balance}")
-print(f"Final balance: ${round(account_balance,2)}")
-print(f"Total P/L: ${total_usd} ({total_pips} pips)")
-print(f"Percentage return: {percentage_PL:.2f}%")
-print(f"Risk per trade: {risk_percent*100}%")
+    # --- Equity curve, drawdowns, cumulative pips ---
+    equity_curve = [starting_balance]
+    balance = starting_balance
+    for t in completed_trades:
+        balance += t['profit_usd']
+        equity_curve.append(balance)
 
-if metrics:
-    print("\nTrade Statistics:")
-    print(f"Total trades: {metrics['total_trades']}")
-    print(f"Wins: {metrics['wins']} | Losses: {metrics['losses']}")
-    print(f"Win rate: {metrics['win_rate']}%")
-    print(f"Average win: ${metrics['avg_win']} | Average loss: ${metrics['avg_loss']}")
-    print(f"Profit factor: {metrics['profit_factor']}")
-print("="*40)
+    drawdowns = []
+    peak = starting_balance
+    balance = starting_balance
+    for t in completed_trades:
+        balance += t['profit_usd']
+        peak = max(peak, balance)
+        drawdowns.append(peak - balance)
 
-equity_curve = [starting_balance]
-balance = starting_balance
-for t in completed_trades:
-    balance += t['profit_usd']
-    equity_curve.append(balance)
+    profits_usd = [t['profit_usd'] for t in completed_trades]
 
-drawdowns = []
-peak = starting_balance
-balance = starting_balance
-for t in completed_trades:
-    balance += t['profit_usd']
-    peak = max(peak, balance)
-    drawdowns.append(peak - balance)
+    cum_pips = [0]
+    total = 0
+    for t in completed_trades:
+        total += t['profit_pips']
+        cum_pips.append(total)
 
-profits_usd = [t['profit_usd'] for t in completed_trades]
+    # --- Plots ---
+    def save_backtest_charts(equity_curve, drawdowns, profits_usd, cum_pips, instrument, folder_name):
+        os.makedirs(folder_name, exist_ok=True)
 
-cum_pips = [0]
-total = 0
-for t in completed_trades:
-    total += t['profit_pips']
-    cum_pips.append(total)
+        # Equity Curve
+        plt.figure(figsize=(8, 5))
+        plt.plot(equity_curve, label="Equity Curve")
+        plt.title(f"{instrument} Equity Curve")
+        plt.xlabel("Trades")
+        plt.ylabel("Account Balance ($)")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(folder_name, f"{instrument}_equity_curve.png"), dpi=300)
+        plt.close()
 
-export_trades_to_csv("trades_made.csv")
+        # Drawdown
+        plt.figure(figsize=(8, 5))
+        plt.plot(drawdowns, color='red')
+        plt.title("Drawdown over Time")
+        plt.xlabel("Trades")
+        plt.ylabel("Drawdown ($)")
+        plt.grid(True)
+        plt.savefig(os.path.join(folder_name, f"{instrument}_drawdown.png"), dpi=300)
+        plt.close()
 
-plt.figure(figsize=(12,6))
-plt.plot(equity_curve, label="Equity Curve")
-plt.xlabel("Trades")
-plt.ylabel("Account Balance ($)")
-plt.title("Backtest Equity Curve")
-plt.legend()
-plt.grid(True)
-plt.show()
+        # Profit Distribution
+        plt.figure(figsize=(8, 5))
+        plt.hist(profits_usd, bins=30, edgecolor='black')
+        plt.title("Distribution of Trade Profits")
+        plt.xlabel("Profit (USD)")
+        plt.ylabel("Frequency")
+        plt.savefig(os.path.join(folder_name, f"{instrument}_profit_distribution.png"), dpi=300)
+        plt.close()
 
-plt.figure(figsize=(12,4))
-plt.plot(drawdowns, color='red')
-plt.title("Drawdown over Time")
-plt.xlabel("Trades")
-plt.ylabel("Drawdown ($)")
-plt.grid(True)
-plt.show()
+        # Cumulative Pips
+        plt.figure(figsize=(8, 5))
+        plt.plot(cum_pips)
+        plt.title("Cumulative Pips Over Time")
+        plt.xlabel("Trades")
+        plt.ylabel("Pips")
+        plt.savefig(os.path.join(folder_name, f"{instrument}_cumulative_pips.png"), dpi=300)
+        plt.close()
 
-plt.hist(profits_usd, bins=30, edgecolor='black')
-plt.title("Distribution of Trade Profits")
-plt.xlabel("Profit (USD)")
-plt.ylabel("Frequency")
-plt.show()
+    save_backtest_charts(equity_curve, drawdowns, profits_usd, cum_pips, instrument, folder_name)
 
-plt.plot(cum_pips)
-plt.title("Cumulative Pips Over Time")
-plt.show()
+    # --- Print summary ---
+    total_usd = sum(t['profit_usd'] for t in completed_trades)
+    total_pips = sum(t['profit_pips'] for t in completed_trades)
+    percentage_PL = (total_usd / starting_balance) * 100
+
+    print("\n" + "="*40)
+    print("BACKTEST RESULTS")
+    print("="*40)
+    print(f"Instrument: {instrument}")
+    print(f"Initial balance: ${starting_balance}")
+    print(f"Final balance: ${round(account_balance,2)}")
+    print(f"Total P/L: ${total_usd} ({total_pips} pips)")
+    print(f"Percentage return: {percentage_PL:.2f}%")
+    print(f"Risk per trade: {risk_percent*100}%")
+    print("\n=== Metrics ===")
+    for k, v in metrics.items():
+        print(f"{k}: {v}")
+
+    return completed_trades, account_balance, metrics
+
+test_risk_percent_values = [0.01, 0.03, 0.05, 0.1]
+test_trail_start_values = [0.3, 0.5, 0.7, 0.9]
+test_trail_on = [True, False]
+test_trail_distance_valuse = [0.1, 0.25, 0.5, 0.75, 0.9]
+
+permutations = len(test_trail_on) * len(test_risk_percent_values) * len(test_trail_start_values) * len(test_trail_distance_valuse) # 160
+counter = 0
+for trail_on in test_trail_on:
+    for risk_percent in test_risk_percent_values:
+        for start_values in test_trail_start_values:
+            for trail_distance in test_trail_distance_valuse:
+                counter += 1
+                print(f'Permutation: {counter} of {permutations}, {permutations-counter} remaining')
+                results_filename = f'results_permutation_{counter}.csv'
+                folder_name = f'results_set_{counter}'
+                metric_filename = f'metrics_{counter}.csv'
+                run_backtest('EUR_USD', risk_percent, 850, 34560, trail_on, start_values, trail_distance, False, results_filename, folder_name, metric_filename)
