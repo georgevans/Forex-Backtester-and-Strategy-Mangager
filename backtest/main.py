@@ -151,7 +151,7 @@ def run_backtest(
             trades_closed += 1
 
     # --- Load historical data ---
-    historical_candles = pd.read_csv('EURUSD5.csv')
+    historical_candles = pd.read_csv('backtest\EURUSD5.csv')
     historical_candles = historical_candles.tail(candle_counter).reset_index(drop=True)
 
     # --- Backtest loop ---
@@ -378,4 +378,4 @@ for trail_on in test_trail_on:
                 results_filename = f'results_permutation_{counter}.csv'
                 folder_name = f'results_set_{counter}'
                 metric_filename = f'metrics_{counter}.csv'
-                run_backtest('EUR_USD', risk_percent, 850, 34560, trail_on, start_values, trail_distance, False, results_filename, folder_name, metric_filename)
+                run_backtest('EUR_USD', risk_percent, 850, 5760, trail_on, start_values, trail_distance, False, results_filename, folder_name, metric_filename)

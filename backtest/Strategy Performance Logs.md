@@ -112,9 +112,9 @@ Completed Trades file:
 ## Experiment Metadata
 
 - **Strategy:** EMA 9/25 Crossover  
-- **Instrument:** [e.g., EUR/USD]  
-- **Data Source:** [CSV or API source]  
-- **Candle Count:** [Number of candles used in backtest]  
+- **Instrument:** EUR USD
+- **Data Source:** [] 
+- **Candle Count:** 5760 - 1 Month of candle data 
 - **Date Started:** YYYY-MM-DD  
 - **Date Completed:** YYYY-MM-DD  
 

@@ -51,6 +51,39 @@ def format_price(price, decimal_places=5):
     format_str = '0.' + '0' * decimal_places
     return Decimal(str(price)).quantize(Decimal(format_str), rounding=ROUND_HALF_UP)
 
+def get_trailing_stop_distance_if_triggered(candle, trade, trail_start, trail_distance):
+    """
+    Check if price has reached 50% of TP and return 25% TP as trailing stop distance.
+
+    Parameters:
+        candle (dict): OHLC candle data with keys: open, high, low, close
+        entry_price (float): Entry price of the trade
+        take_profit (float): Take profit level
+        action (str): 'buy' or 'sell'
+
+    Returns:
+        float: trailing stop distance (25% of TP), if trigger condition met
+        None: if trigger condition not met
+    """
+    entry_price = trade['entry_price']
+    take_profit = trade["original_take_profit"]
+    action = trade["action"]
+    tp_distance = abs(take_profit - entry_price)
+    trail_distance = round(tp_distance * trail_distance, 5)  # Use 5 decimals for FX precision
+
+    # 50% TP trigger level
+    if action == 'buy':
+        trigger_price = entry_price + trail_start * tp_distance
+        if candle['high'] >= trigger_price:
+            return trail_distance
+
+    elif action == 'sell':
+        trigger_price = entry_price - trail_start * tp_distance
+        if candle['low'] <= trigger_price:
+            return trail_distance
+
+    return None
+
 
 def run(candles, instrument="EUR_USD"):
     """
@@ -101,11 +134,6 @@ def run(candles, instrument="EUR_USD"):
         candle_1_ago = df.iloc[-2]    # N-1 (confirmation candle)
         current_candle = df.iloc[-1]  # N (entry candle)
 
-        print(f"Signal detection - EMA9: {float(candle_1_ago['ema_9']):.5f}, "
-                   f"EMA25: {float(candle_1_ago['ema_25']):.5f}, "
-                   f"EMA200: {float(candle_1_ago['ema_200']):.5f}")
-        print(f"RSI: {float(rsi):.2f}, ATR: {float(atr):.5f}")
-
         # --- BUY condition ---
         buy_crossover = (candle_2_ago["ema_9"] < candle_2_ago["ema_25"] and 
                         candle_1_ago["ema_9"] > candle_1_ago["ema_25"])
@@ -113,8 +141,6 @@ def run(candles, instrument="EUR_USD"):
         buy_rsi_filter = rsi <= Decimal('70')
 
         if buy_crossover and buy_trend_filter and buy_rsi_filter:
-            print("BUY signal detected")
-            
             entry_price = current_candle["open"]
             sl = candle_1_ago["close"] - (Decimal('1.5') * atr)
             tp = candle_1_ago["close"] + (Decimal('3') * atr)
@@ -123,8 +149,6 @@ def run(candles, instrument="EUR_USD"):
             entry_formatted = format_price(entry_price)
             sl_formatted = format_price(sl)
             tp_formatted = format_price(tp)
-            
-            print(f"BUY order: Entry={entry_formatted}, SL={sl_formatted}, TP={tp_formatted}")
             
             return {
                 "instrument": instrument,
@@ -147,7 +171,6 @@ def run(candles, instrument="EUR_USD"):
         sell_rsi_filter = rsi >= Decimal('30')
 
         if sell_crossover and sell_trend_filter and sell_rsi_filter:
-            print("SELL signal detected")
             
             entry_price = current_candle["open"]
             sl = candle_1_ago["close"] + (Decimal('1.5') * atr)
@@ -157,8 +180,6 @@ def run(candles, instrument="EUR_USD"):
             entry_formatted = format_price(entry_price)
             sl_formatted = format_price(sl)
             tp_formatted = format_price(tp)
-            
-            print(f"SELL order: Entry={entry_formatted}, SL={sl_formatted}, TP={tp_formatted}")
             
             return {
                 "instrument": instrument,
