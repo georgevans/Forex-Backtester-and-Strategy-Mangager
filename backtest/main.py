@@ -151,7 +151,7 @@ def run_backtest(
             trades_closed += 1
 
     # --- Load historical data ---
-    historical_candles = pd.read_csv('backtest\EURUSD5.csv')
+    historical_candles = pd.read_csv('EURUSD5.csv')
     historical_candles = historical_candles.tail(candle_counter).reset_index(drop=True)
 
     # --- Backtest loop ---
