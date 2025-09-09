@@ -60,7 +60,7 @@ python backtester.py
 
 ### Live Trading
 
-1. Configure instruments and strategies in `live_trader.py`:
+1. Configure instruments and strategies in `main.py`:
 
 ```python
 instruments = ['EUR_USD', 'GBP_USD', 'USD_JPY']
@@ -70,7 +70,7 @@ strategies = ['EMA_CROSS_9_25']
 2. Run live trading bot:
 
 ```bash
-python live_trader.py
+python main.py
 ```
 
 3. The bot fetches live candles, evaluates signals, and executes trades on your OANDA account.
