@@ -83,9 +83,29 @@ python live_trader.py
 - **RSI Filter:** Prevents buying if RSI > 70 or selling if RSI < 30  
 - **Trailing Stop:** Optional trailing stop to protect profits  
 
+## Future developments
+
+A key area for improvement in this strategy lies in the use of machine learning (ML) to optimize parameters such as EMA lengths, trailing stop settings, and risk allocation rules. Instead of relying on manual tuning or grid-search style backtests, ML could help uncover non-obvious parameter interactions and adapt the strategy to evolving market conditions.
+
+### Planned Approaches
+
+#### Hyperparameter optimization
+- Apply techniques such as Bayesian Optimization or Genetic Algorithms to efficiently search the parameter space and maximize performance metrics (e.g., profit factor, Sharpe ratio, drawdown control).
+
+#### Supervised learning models
+- Random Forests / Gradient Boosted Trees: to identify nonlinear relationships between market features (volatility, time-of-day, ATR values) and trade outcomes.
+- Logistic Regression: As a baseline for predicting probability of a trade being profitable.
+
+#### Reinforcement Learning (RL)
+- Explore RL frameworks where the model directly learns a trading policy (when to enter/exit, adjust stops) based on maximizing long-term reward rather than optimizing static parameters.
+
+### Goals of ML Integration
+- Reduce reliance on fixed rules that may degrade as market regimes shift.
+- Dynamically adapt parameters (e.g., trailing stop distances) based on live volatility and liquidity conditions.
+- Improve consistency of performance by minimizing drawdowns and filtering out false signals.
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request for improvements or new features.
 
 This project is licensed under the MIT License.
-
