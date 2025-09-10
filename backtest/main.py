@@ -2,7 +2,7 @@ import pandas as pd
 import time
 import os
 import csv
-import strategies.EMA_CROSS_9_25_bot as strat
+import strategies.EMA_CROSS_9_25_WITH_TIME_RESTRICT as strat # Stat must return signal in format: {"instrument": instrument, "action": "sell", "entry_price": float(entry_formatted), "stop_loss": float(sl_formatted),"take_profit": float(tp_formatted),"rsi": float(rsi),"atr": float(atr),"ema_9": float(candle_1_ago["ema_9"]),"ema_25": float(candle_1_ago["ema_25"]), "ema_200": float(candle_1_ago["ema_200"]), "reason": "ema_crossover_sell"}
 import matplotlib.pyplot as plt
 
 def run_backtest(
@@ -13,10 +13,13 @@ def run_backtest(
     trail_on=False,
     trail_start=0.7,
     trail_distance=0.25,
+    min_number_of_required_candles_for_strategy=200,
     debug=False,
     csv_filename="trades_made_1",
     folder_name="results_set_1",
-    metric_filename="metric_set_1"
+    metric_filename="metric_set_1",
+    results_directory='results_sets',
+    details_file='details_set_1.txt'
 ):
     # --- Globals / State ---
     trades = []
@@ -174,7 +177,12 @@ def run_backtest(
         if idx < 200:
             continue
 
-        signal = strat.run(historical_candles.iloc[:idx+1].to_dict('records'), instrument=instrument)
+        number_of_required_candles_for_strategy = min_number_of_required_candles_for_strategy
+        start_idx = max(0, idx - number_of_required_candles_for_strategy + 1)
+        recent_candles = historical_candles.iloc[start_idx:idx+1].to_dict('records')
+        signal = strat.run(recent_candles, instrument=instrument)
+        if(signal['action'] == 'buy' or signal['action'] == 'sell'):
+            print(f'Signal: TRADE TRIGGERED: {signal['action']} on {signal['instrument']}')
         if signal['action'] != 'hold' and check_instrument_availability():
             entry_price = float(historical_candles.iloc[idx + 1]['open']) if idx + 1 < len(historical_candles) else candle['close']
             execute_trade(signal, entry_price, row.get('date'), row.get('time'))
@@ -254,24 +262,38 @@ def run_backtest(
 
     metrics = calculate_metrics(completed_trades)
 
-    # --- Save trades ---
-    if completed_trades:
-        os.makedirs(folder_name, exist_ok=True)  # ensure folder exists
-        trades_csv_path = os.path.join(folder_name, csv_filename)
+    # --- Save trades and metrics into results_directory/folder_name/{results,metrics} ---
+    # Prepare run folder and subfolders (always create them so charts have a place)
+    run_folder = os.path.join(results_directory, folder_name)
+    results_subdir = os.path.join(run_folder, "results")
+    metrics_subdir = os.path.join(run_folder, "metrics")
+    os.makedirs(results_subdir, exist_ok=True)
+    os.makedirs(metrics_subdir, exist_ok=True)
 
-        with open(trades_csv_path, "w", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=completed_trades[0].keys())
+    # Save trades CSV (only if trades exist)
+    if completed_trades:
+        trades_csv_path = os.path.join(results_subdir, csv_filename)
+        with open(trades_csv_path, "w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=list(completed_trades[0].keys()))
             writer.writeheader()
             for tr in completed_trades:
                 writer.writerow(tr)
+    else:
+        trades_csv_path = None
 
+    # Save metrics CSV (always create file with header; write values if present)
+    metrics_csv_path = os.path.join(metrics_subdir, metric_filename)
+    with open(metrics_csv_path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Metric", "Value"])
         if metrics:
-            metrics_csv_path = os.path.join(folder_name, metric_filename)
-        with open(metrics_csv_path, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(["Metric", "Value"])
             for k, v in metrics.items():
                 writer.writerow([k, v])
+
+    details_path = os.path.join(run_folder, details_file)
+    with open(details_path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow([instrument, risk_percent, starting_balance, candle_counter, trail_on, trail_distance])
 
 
     # --- Equity curve, drawdowns, cumulative pips ---
@@ -340,7 +362,8 @@ def run_backtest(
         plt.savefig(os.path.join(folder_name, f"{instrument}_cumulative_pips.png"), dpi=300)
         plt.close()
 
-    save_backtest_charts(equity_curve, drawdowns, profits_usd, cum_pips, instrument, folder_name)
+    # Save charts into the results subfolder so charts live under results_directory/folder_name/results/
+    save_backtest_charts(equity_curve, drawdowns, profits_usd, cum_pips, instrument, results_subdir)
 
     # --- Print summary ---
     total_usd = sum(t['profit_usd'] for t in completed_trades)
@@ -362,13 +385,19 @@ def run_backtest(
 
     return completed_trades, account_balance, metrics
 
+
+min_number_of_required_candles_for_strategy = 300
+
 test_risk_percent_values = [0.01, 0.03, 0.05, 0.1]
 test_trail_start_values = [0.3, 0.5, 0.7, 0.9]
 test_trail_on = [True, False]
 test_trail_distance_valuse = [0.1, 0.25, 0.5, 0.75, 0.9]
+master_directory = 'master_set_1' # the name of the top level directory for your results to be stored in eg: if the name is "master_set_1", results will be stored like: master_set_1/results_set_1, master_set_1/results_set_2 etc
+
 
 permutations = len(test_trail_on) * len(test_risk_percent_values) * len(test_trail_start_values) * len(test_trail_distance_valuse) # 160
 counter = 0
+start_time = time.perf_counter()
 for trail_on in test_trail_on:
     for risk_percent in test_risk_percent_values:
         for start_values in test_trail_start_values:
@@ -377,5 +406,7 @@ for trail_on in test_trail_on:
                 print(f'Permutation: {counter} of {permutations}, {permutations-counter} remaining')
                 results_filename = f'results_permutation_{counter}.csv'
                 folder_name = f'results_set_{counter}'
-                metric_filename = f'metrics_{counter}.csv'
-                run_backtest('EUR_USD', risk_percent, 850, 5760, trail_on, start_values, trail_distance, False, results_filename, folder_name, metric_filename)
+                metric_filename = f'metrics_{counter}.csv' 
+                run_backtest('EUR_USD', risk_percent, 850, 8928, trail_on, start_values, trail_distance, min_number_of_required_candles_for_strategy, False, results_filename, folder_name, metric_filename, master_directory)
+                end_time = time.perf_counter()
+                print(f'time elapsed for session {counter}: {end_time-start_time}')
